@@ -1,6 +1,6 @@
 # termux-android-setup
 
-Ein Script, das in **Termux (aarch64)** eine komplette Umgebung für die Android-App-Entwicklung einrichtet: Java 17, Gradle, Kotlin, Git mit GitHub-Login, Android-SDK, NDK, Build-Tools, Antigravity CLI und eine fertig konfigurierte `.bashrc`.
+Ein Script, das in **Termux (aarch64)** eine komplette Umgebung für die Android-App-Entwicklung einrichtet: Java 17, Gradle, Kotlin, Git mit GitHub-Login, Android-SDK, NDK, Build-Tools, Antigravity CLI, Termuxify und eine fertig konfigurierte `.bashrc`.
 
 Ziel: Android-Apps (Kotlin, Jetpack Compose, NDK/C++) direkt auf dem Smartphone bauen, ohne PC, ohne proot und ohne Root.
 
@@ -85,7 +85,11 @@ curl -fsSL https://raw.githubusercontent.com/scto/termux-android-setup/main/setu
 - Termux-Port von [wallentx/antigravity-cli-termux](https://github.com/wallentx/antigravity-cli-termux)
 - Auf CPUs ohne LSE-Atomics wird automatisch `qemu-user-aarch64` installiert
 
-### 6. `~/.bashrc`
+### 6. Termuxify
+- Fragt interaktiv ab, ob das Repository [scto/Termuxify](https://github.com/scto/Termuxify) nach `~/Termuxify` heruntergeladen werden soll.
+- Bietet im Anschluss die Möglichkeit, automatisch nach Startskripten (`install.sh`, `setup.sh` oder `termuxify.sh`) zu suchen und diese direkt auszuführen.
+
+### 7. `~/.bashrc`
 - `JAVA_HOME` (OpenJDK 17, mit Fallback auf das installierte `javac`)
 - `GRADLE_HOME` (Termux-Gradle) und `GRADLE_USER_HOME` (`~/.gradle`: Caches, Wrapper, `gradle.properties`)
 - `ANDROID_HOME`, `ANDROID_SDK_ROOT`, `ANDROID_NDK_HOME`, `NDK`, `PATH`
@@ -107,6 +111,7 @@ curl -fsSL https://raw.githubusercontent.com/scto/termux-android-setup/main/setu
 | `--skip-sdk` | SDK überspringen |
 | `--skip-ndk` | NDK überspringen |
 | `--skip-agy` | Antigravity CLI überspringen |
+| `--skip-termuxify` | Termuxify-Abfrage überspringen |
 | `--skip-git` | Git-Einrichtung (Name, E-Mail, Token) überspringen |
 | `--skip-bashrc` | `.bashrc` nicht verändern |
 | `--no-platform` | Keine Platform (`android.jar`) installieren |
