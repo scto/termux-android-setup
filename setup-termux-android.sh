@@ -10,7 +10,8 @@
 #        native Binaries (aapt2, aidl, zipalign …) werden durch aarch64 ersetzt
 #   4. Android-NDK  (HomuHomu833/android-ndk-custom)  – Versionsmenü, Default r29d
 #   5. Antigravity CLI "agy" (wallentx/antigravity-cli-termux)
-#   6. ~/.bashrc: JAVA_HOME, GRADLE_HOME, ANDROID_HOME, NDK, PATH, Aliases
+#   6. Termuxify (scto/Termuxify)
+#   7. ~/.bashrc: JAVA_HOME, GRADLE_HOME, ANDROID_HOME, NDK, PATH, Aliases
 #
 #  Nutzung:
 #    curl -fsSL https://raw.githubusercontent.com/scto/termux-android-setup/main/setup-termux-android.sh | bash
@@ -25,6 +26,7 @@
 #    --skip-sdk         SDK überspringen
 #    --skip-ndk         NDK überspringen
 #    --skip-agy         Antigravity CLI überspringen
+#    --skip-termuxify   Termuxify-Abfrage überspringen
 #    --skip-git         Git-Einrichtung (Name/E-Mail/Token) überspringen
 #    --skip-bashrc      .bashrc nicht anfassen
 #    --no-platform      Keine android.jar-Platform installieren
@@ -53,7 +55,7 @@ DL_DIR="${DL_DIR:-$HOME/.cache/termux-android-setup}"
 
 SDK_VER="" NDK_VER="" PLATFORM_API=""
 GIT_NAME="${GIT_NAME:-}" GIT_EMAIL="${GIT_EMAIL:-}" GIT_TOKEN="${GIT_TOKEN:-}"
-ASSUME_YES=0 SKIP_GIT=0 SKIP_PKG=0 SKIP_SDK=0 SKIP_NDK=0 SKIP_AGY=0 SKIP_BASHRC=0 NO_PLATFORM=0 FORCE=0
+ASSUME_YES=0 SKIP_GIT=0 SKIP_PKG=0 SKIP_SDK=0 SKIP_NDK=0 SKIP_AGY=0 SKIP_TERMUXIFY=0 SKIP_BASHRC=0 NO_PLATFORM=0 FORCE=0
 
 # ── Ausgabe ──────────────────────────────────────────────────────────────────
 if [[ -t 1 ]]; then
@@ -69,26 +71,27 @@ trap 'die "Abbruch in Zeile $LINENO: $BASH_COMMAND"' ERR
 
 usage() {
   local self="${BASH_SOURCE[0]}"
-  if [[ -f "$self" ]]; then sed -n '2,37p' "$self" | sed 's/^# \{0,1\}//'; else echo "Siehe Kopfkommentar im Script."; fi
+  if [[ -f "$self" ]]; then sed -n '2,38p' "$self" | sed 's/^# \{0,1\}//'; else echo "Siehe Kopfkommentar im Script."; fi
   exit 0
 }
 
 # ── Argumente ────────────────────────────────────────────────────────────────
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    --sdk)         SDK_VER="${2:?Version fehlt}"; shift ;;
-    --ndk)         NDK_VER="${2:?Version fehlt}"; shift ;;
-    --platform)    PLATFORM_API="${2:?API-Level fehlt}"; shift ;;
-    -y|--yes)      ASSUME_YES=1 ;;
-    --skip-pkg)    SKIP_PKG=1 ;;
-    --skip-sdk)    SKIP_SDK=1 ;;
-    --skip-ndk)    SKIP_NDK=1 ;;
-    --skip-agy)    SKIP_AGY=1 ;;
-    --skip-bashrc) SKIP_BASHRC=1 ;;
-    --skip-git)    SKIP_GIT=1 ;;
-    --no-platform) NO_PLATFORM=1 ;;
-    --force)       FORCE=1 ;;
-    -h|--help)     usage ;;
+    --sdk)            SDK_VER="${2:?Version fehlt}"; shift ;;
+    --ndk)            NDK_VER="${2:?Version fehlt}"; shift ;;
+    --platform)       PLATFORM_API="${2:?API-Level fehlt}"; shift ;;
+    -y|--yes)         ASSUME_YES=1 ;;
+    --skip-pkg)       SKIP_PKG=1 ;;
+    --skip-sdk)       SKIP_SDK=1 ;;
+    --skip-ndk)       SKIP_NDK=1 ;;
+    --skip-agy)       SKIP_AGY=1 ;;
+    --skip-termuxify) SKIP_TERMUXIFY=1 ;;
+    --skip-bashrc)    SKIP_BASHRC=1 ;;
+    --skip-git)       SKIP_GIT=1 ;;
+    --no-platform)    NO_PLATFORM=1 ;;
+    --force)          FORCE=1 ;;
+    -h|--help)        usage ;;
     *) die "Unbekannte Option: $1 (siehe --help)" ;;
   esac
   shift
@@ -251,7 +254,7 @@ select_versions() {
 # 1. Termux-Pakete
 # =============================================================================
 install_packages() {
-  step "1/6  Termux-Pakete installieren"
+  step "1/7  Termux-Pakete installieren"
   export DEBIAN_FRONTEND=noninteractive
   yes | pkg update -y || true
   pkg upgrade -y -o Dpkg::Options::="--force-confnew" || true
@@ -323,7 +326,7 @@ ask_git() {
 }
 
 setup_git() {
-  step "2/6  Git konfigurieren"
+  step "2/7  Git konfigurieren"
   [[ -n "$GIT_NAME"  ]] && git config --global user.name  "$GIT_NAME"
   [[ -n "$GIT_EMAIL" ]] && git config --global user.email "$GIT_EMAIL"
 
@@ -404,7 +407,7 @@ overlay_natives() {
 }
 
 install_sdk() {
-  step "3/6  Android-SDK $SDK_VER (aarch64) → $ANDROID_HOME"
+  step "3/7  Android-SDK $SDK_VER (aarch64) → $ANDROID_HOME"
   local bt_dir="$ANDROID_HOME/build-tools/$SDK_VER"
 
   # a) cmdline-tools + Lizenzen
@@ -478,7 +481,7 @@ link_cmake() {
 # 4. Android-NDK
 # =============================================================================
 install_ndk() {
-  step "4/6  Android-NDK $NDK_VER (aarch64)"
+  step "4/7  Android-NDK $NDK_VER (aarch64)"
   mkdir -p "$ANDROID_HOME/ndk"
 
   local file="$DL_DIR/$NDK_ASSET" tmp="$DL_DIR/ndk-extract" root ver
@@ -537,7 +540,7 @@ configure_gradle() {
 # 5. Antigravity CLI (agy)
 # =============================================================================
 install_agy() {
-  step "5/6  Antigravity CLI (agy) installieren"
+  step "5/7  Antigravity CLI (agy) installieren"
   if ! grep -q atomics /proc/cpuinfo && ! command -v qemu-aarch64 >/dev/null; then
     warn "CPU ohne LSE-Atomics → installiere qemu-user-aarch64"
     pkg install -y qemu-user-aarch64 || warn "qemu-user-aarch64 nicht installierbar"
@@ -550,10 +553,53 @@ install_agy() {
 }
 
 # =============================================================================
-# 6. .bashrc
+# 6. Termuxify
+# =============================================================================
+install_termuxify() {
+  step "6/7  Termuxify (scto/Termuxify) herunterladen & ausführen"
+  local ans_dl ans_run
+  local target_dir="$HOME/Termuxify"
+
+  ans_dl="$(ask "Möchtest du das Termuxify-Repository (scto/Termuxify) herunterladen? (j/n)" "n")"
+  if [[ "$ans_dl" =~ ^[jJyY] ]]; then
+    if [[ -d "$target_dir" ]]; then
+      warn "Verzeichnis $target_dir existiert bereits."
+    else
+      echo "Klone https://github.com/scto/Termuxify nach $target_dir ..."
+      git clone https://github.com/scto/Termuxify "$target_dir"
+      ok "Termuxify heruntergeladen."
+    fi
+
+    ans_run="$(ask "Soll Termuxify im Anschluss ausgeführt werden? (j/n)" "n")"
+    if [[ "$ans_run" =~ ^[jJyY] ]]; then
+      echo "Prüfe Startskripte in $target_dir ..."
+      cd "$target_dir" || return
+      
+      # Versuche gängige Startskripte zu finden
+      if [[ -x "./install.sh" || -f "./install.sh" ]]; then
+        bash "./install.sh"
+      elif [[ -x "./setup.sh" || -f "./setup.sh" ]]; then
+        bash "./setup.sh"
+      elif [[ -x "./termuxify.sh" || -f "./termuxify.sh" ]]; then
+        bash "./termuxify.sh"
+      else
+        warn "Kein Standard-Startskript (install.sh, setup.sh, termuxify.sh) gefunden."
+        echo "Bitte überprüfe den Ordner $target_dir und starte es manuell."
+      fi
+      
+      # Zurück ins vorherige Verzeichnis
+      cd - >/dev/null || true
+    fi
+  else
+    echo "Termuxify wird übersprungen."
+  fi
+}
+
+# =============================================================================
+# 7. .bashrc
 # =============================================================================
 configure_bashrc() {
-  step "6/6  ~/.bashrc konfigurieren"
+  step "7/7  ~/.bashrc konfigurieren"
   local rc="$HOME/.bashrc"
   touch "$rc"
   cp "$rc" "$rc.bak.$(date +%Y%m%d%H%M%S)"
@@ -703,10 +749,11 @@ GIT_LOGIN=""
 select_versions
 [[ $SKIP_GIT -eq 1 ]] || setup_git
 SDKMANAGER="" CMAKE_VER="" NDK_REV=""
-[[ $SKIP_SDK    -eq 1 ]] || { install_sdk; link_cmake; configure_gradle; }
-[[ $SKIP_NDK    -eq 1 ]] || install_ndk
-[[ $SKIP_AGY    -eq 1 ]] || install_agy
-[[ $SKIP_BASHRC -eq 1 ]] || configure_bashrc
+[[ $SKIP_SDK       -eq 1 ]] || { install_sdk; link_cmake; configure_gradle; }
+[[ $SKIP_NDK       -eq 1 ]] || install_ndk
+[[ $SKIP_AGY       -eq 1 ]] || install_agy
+[[ $SKIP_TERMUXIFY -eq 1 ]] || install_termuxify
+[[ $SKIP_BASHRC    -eq 1 ]] || configure_bashrc
 
 step "Fertig 🎉"
 cat <<EOF
