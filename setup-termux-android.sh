@@ -440,6 +440,8 @@ install_cmdline_tools() {
   rm -rf "$ANDROID_HOME/cmdline-tools/latest"
   mv "$(content_root "$tmp")" "$ANDROID_HOME/cmdline-tools/latest"
   rm -rf "$tmp"
+  chmod +x "$ANDROID_HOME"/cmdline-tools/latest/bin/* 2>/dev/null || true
+  [[ -x "$SDKMANAGER" ]] || { warn "sdkmanager nach dem Entpacken nicht gefunden ($SDKMANAGER)."; return 1; }
   ok "cmdline-tools installiert"
 }
 
@@ -451,7 +453,9 @@ accept_licenses() {
     > "$ANDROID_HOME/licenses/android-sdk-license"
   printf '\n84831b9409646a918e30573bab4c9c91346d8abd\n' \
     > "$ANDROID_HOME/licenses/android-sdk-preview-license"
-  [[ -x "${SDKMANAGER:-}" ]] && { yes | sdkm --licenses >/dev/null 2>&1 || true; }
+  # if statt "[[ ]] && …": als letzter Befehl würde ein Fehlschlag die Funktion mit 1 beenden (set -e / ERR-Trap)
+  if [[ -x "${SDKMANAGER:-}" ]]; then yes | sdkm --licenses >/dev/null 2>&1 || true; fi
+  return 0
 }
 
 choose_platform() {
