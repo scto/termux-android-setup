@@ -5,10 +5,11 @@
 #
 #   1. Termux-Pakete (Java 17, Git, Git-LFS, Gradle, Kotlin, build-essential, pip …)
 #   2. Git einrichten: Name, E-Mail, GitHub-Token (→ Credential Store)
-#   3. Android-SDK  (HomuHomu833/android-sdk-custom)  – Versionsmenü, Default 37.0.0
+#   3. Android-SDK  (scto/codeforge-tools, Tags android-sdk-<ver>)  – Versionsmenü, Default 37.0.0
 #      + Build-Tools / Platform (android.jar) via Google cmdline-tools,
 #        native Binaries (aapt2, aidl, zipalign …) werden durch aarch64 ersetzt
-#   4. Android-NDK  (HomuHomu833/android-ndk-custom)  – Versionsmenü, Default r29d
+#   4. Android-NDK  (scto/codeforge-tools, Tags android-ndk-<name>)  – Versionsmenü, Default r29d
+#      CMake        (scto/codeforge-tools, Tags cmake-<ver>)         – Versionsmenü, Default 3.22.1
 #   5. Antigravity CLI "agy" (wallentx/antigravity-cli-termux)
 #   6. Termuxify (scto/Termuxify)
 #   7. ~/.bashrc: JAVA_HOME, GRADLE_HOME, ANDROID_HOME, NDK, PATH, Aliases
@@ -20,11 +21,13 @@
 #  Optionen:
 #    --sdk VER          SDK-Version ohne Menü (z.B. 37.0.0)
 #    --ndk VER          NDK-Version ohne Menü (z.B. r29d, r30b)
+#    --cmake VER        CMake-Version ohne Menü (z.B. 3.22.1)
 #    --platform N       Android-Platform API-Level ohne Menü (z.B. 36)
 #    -y | --yes         Keine Fragen, überall Standardwerte nehmen
 #    --skip-pkg         Paketinstallation überspringen
 #    --skip-sdk         SDK überspringen
 #    --skip-ndk         NDK überspringen
+#    --skip-cmake       CMake aus dem Mirror überspringen (Termux-CMake wird verlinkt)
 #    --skip-agy         Antigravity CLI überspringen
 #    --skip-termuxify   Termuxify-Abfrage überspringen
 #    --skip-git         Git-Einrichtung (Name/E-Mail/Token) überspringen
@@ -34,18 +37,25 @@
 #    -h | --help        Hilfe
 #
 #  ENV: GIT_NAME, GIT_EMAIL, GIT_TOKEN (Git ohne Rückfragen), GITHUB_TOKEN,
-#       ANDROID_HOME, ASSET_VARIANT
+#       ANDROID_HOME, ASSET_VARIANT, TOOLS_REPO (Standard: scto/codeforge-tools),
+#       INCLUDE_PRERELEASE=1 (beta/rc-Releases zulassen)
 #  Re-Run ist sicher (idempotent): .bashrc-Block wird ersetzt, nicht dupliziert.
 # =============================================================================
 set -Eeuo pipefail
 
 # ── Konfiguration (per ENV überschreibbar) ───────────────────────────────────
-SDK_REPO="${SDK_REPO:-HomuHomu833/android-sdk-custom}"
-NDK_REPO="${NDK_REPO:-HomuHomu833/android-ndk-custom}"
+# Alle Toolchains kommen aus dem eigenen Mirror (scto/codeforge-tools, Releases):
+#   android-sdk-<ver> · android-ndk-<name> · cmake-<ver>
+TOOLS_REPO="${TOOLS_REPO:-scto/codeforge-tools}"
+SDK_PREFIX="${SDK_PREFIX:-android-sdk-}"
+NDK_PREFIX="${NDK_PREFIX:-android-ndk-}"
+CMAKE_PREFIX="${CMAKE_PREFIX:-cmake-}"
+INCLUDE_PRERELEASE="${INCLUDE_PRERELEASE:-0}"
 # Termux = Android/Bionic → "aarch64-linux-android"
 ASSET_VARIANT="${ASSET_VARIANT:-aarch64-linux-android}"
 DEFAULT_SDK="${DEFAULT_SDK:-37.0.0}"
 DEFAULT_NDK="${DEFAULT_NDK:-r29d}"
+DEFAULT_CMAKE="${DEFAULT_CMAKE:-3.22.1}"
 AGY_INSTALLER="${AGY_INSTALLER:-https://raw.githubusercontent.com/wallentx/antigravity-cli-termux/dev/install.sh}"
 # Google cmdline-tools (reines Java → läuft auf aarch64); nur für Java-Teile + android.jar
 CMDLINE_TOOLS_URL="${CMDLINE_TOOLS_URL:-https://dl.google.com/android/repository/commandlinetools-linux-15859902_latest.zip}"
@@ -53,9 +63,9 @@ CMDLINE_TOOLS_URL="${CMDLINE_TOOLS_URL:-https://dl.google.com/android/repository
 ANDROID_HOME="${ANDROID_HOME:-$HOME/android-sdk}"
 DL_DIR="${DL_DIR:-$HOME/.cache/termux-android-setup}"
 
-SDK_VER="" NDK_VER="" PLATFORM_API=""
+SDK_VER="" NDK_VER="" CMAKE_SEL="" CMAKE_PICK="" PLATFORM_API=""
 GIT_NAME="${GIT_NAME:-}" GIT_EMAIL="${GIT_EMAIL:-}" GIT_TOKEN="${GIT_TOKEN:-}"
-ASSUME_YES=0 SKIP_GIT=0 SKIP_PKG=0 SKIP_SDK=0 SKIP_NDK=0 SKIP_AGY=0 SKIP_TERMUXIFY=0 SKIP_BASHRC=0 NO_PLATFORM=0 FORCE=0
+ASSUME_YES=0 SKIP_GIT=0 SKIP_PKG=0 SKIP_SDK=0 SKIP_NDK=0 SKIP_CMAKE=0 SKIP_AGY=0 SKIP_TERMUXIFY=0 SKIP_BASHRC=0 NO_PLATFORM=0 FORCE=0
 
 # ── Ausgabe ──────────────────────────────────────────────────────────────────
 if [[ -t 1 ]]; then
@@ -71,7 +81,7 @@ trap 'die "Abbruch in Zeile $LINENO: $BASH_COMMAND"' ERR
 
 usage() {
   local self="${BASH_SOURCE[0]}"
-  if [[ -f "$self" ]]; then sed -n '2,38p' "$self" | sed 's/^# \{0,1\}//'; else echo "Siehe Kopfkommentar im Script."; fi
+  if [[ -f "$self" ]]; then sed -n '2,41p' "$self" | sed 's/^# \{0,1\}//'; else echo "Siehe Kopfkommentar im Script."; fi
   exit 0
 }
 
@@ -80,11 +90,13 @@ while [[ $# -gt 0 ]]; do
   case "$1" in
     --sdk)            SDK_VER="${2:?Version fehlt}"; shift ;;
     --ndk)            NDK_VER="${2:?Version fehlt}"; shift ;;
+    --cmake)          CMAKE_SEL="${2:?Version fehlt}"; shift ;;
     --platform)       PLATFORM_API="${2:?API-Level fehlt}"; shift ;;
     -y|--yes)         ASSUME_YES=1 ;;
     --skip-pkg)       SKIP_PKG=1 ;;
     --skip-sdk)       SKIP_SDK=1 ;;
     --skip-ndk)       SKIP_NDK=1 ;;
+    --skip-cmake)     SKIP_CMAKE=1 ;;
     --skip-agy)       SKIP_AGY=1 ;;
     --skip-termuxify) SKIP_TERMUXIFY=1 ;;
     --skip-bashrc)    SKIP_BASHRC=1 ;;
@@ -166,44 +178,89 @@ gh_api() {
     || die "GitHub-API nicht erreichbar ($1). Rate-Limit? -> export GITHUB_TOKEN=..."
 }
 
-# releases_tsv <repo> → Zeilen: "<anzeige>\t<asset-name>\t<url>"  (neueste zuerst)
-# Nur Releases mit passendem Termux-Asset (ASSET_VARIANT).
-releases_tsv() {
-  gh_api "https://api.github.com/repos/$1/releases?per_page=100" | jq -r --arg v "$ASSET_VARIANT" '
-    .[] | . as $r
-    | ($r.assets[] | select(.name | test("-" + $v + "\\.(tar\\.xz|tar\\.gz|zip|7z)$"))) as $a
-    | [ (if ($r.name // "") != "" then $r.name else $r.tag_name end)
-        + (if $r.prerelease then " (pre-release)" else "" end),
-        $a.name, $a.browser_download_url ] | @tsv'
+# Alle Releases des Mirrors einmal laden (bis zu 5 Seiten à 100) und zwischenspeichern.
+RELEASES_JSON=""
+fetch_releases() {
+  [[ -n "$RELEASES_JSON" && -s "$RELEASES_JSON" ]] && return 0
+  RELEASES_JSON="$DL_DIR/releases-${TOOLS_REPO//\//_}.json"
+  local page=1 out="$DL_DIR/.rel-page.json" acc="$DL_DIR/.rel-acc.json"
+  echo '[]' > "$acc"
+  while (( page <= 5 )); do
+    gh_api "https://api.github.com/repos/$TOOLS_REPO/releases?per_page=100&page=$page" > "$out"
+    [[ "$(jq 'length' "$out")" -gt 0 ]] || break
+    jq -s 'add' "$acc" "$out" > "$acc.new" && mv "$acc.new" "$acc"
+    (( page++ ))
+  done
+  mv "$acc" "$RELEASES_JSON"; rm -f "$out"
+  [[ "$(jq 'length' "$RELEASES_JSON")" -gt 0 ]] \
+    || die "Keine Releases in $TOOLS_REPO. Repo öffentlich? Mirror-Workflow schon gelaufen?"
 }
 
-# choose_release <repo> <Titel> <Default> <Vorgabe> → setzt REL_NAME / REL_ASSET / REL_URL
-choose_release() {
-  local repo="$1" title="$2" def_ver="$3" want="$4" tsv
-  tsv="$(releases_tsv "$repo")"
-  [[ -n "$tsv" ]] || die "Keine Releases mit Asset *-$ASSET_VARIANT in $repo gefunden."
-  local -a names assets urls
-  while IFS=$'\t' read -r n a u; do names+=("$n"); assets+=("$a"); urls+=("$u"); done <<<"$tsv"
+# releases_tsv <tag-prefix> → Zeilen: "<version>\t<asset-name>\t<url>\t<sha256>" (neueste Version zuerst)
+# version = Tag ohne Präfix. Nur Releases mit passendem Termux-Asset (ASSET_VARIANT).
+# beta/rc-Releases werden ausgeblendet (INCLUDE_PRERELEASE=1 zeigt sie).
+releases_tsv() {
+  fetch_releases
+  jq -r --arg p "$1" --arg v "$ASSET_VARIANT" --arg pre "$INCLUDE_PRERELEASE" '
+    .[] | select((.draft | not) and (.tag_name | startswith($p))) | . as $r
+    | select($pre == "1" or ((($r.tag_name + " " + ($r.name // "")) | ascii_downcase | test("(^|[^a-z])(beta|rc)([^a-z]|$)")) | not))
+    | ($r.assets[] | select(.name | test("-" + $v + "\\.(tar\\.xz|tar\\.gz|zip|7z)$"))) as $a
+    | [ ($r.tag_name | .[($p | length):]), $a.name, $a.browser_download_url,
+        (($a.digest // "") | sub("^sha256:"; "")) ] | @tsv' "$RELEASES_JSON" | sort -t$'\t' -k1,1 -Vr
+}
 
-  # Index für eine Version suchen (exakt in Name/Asset, sonst normalisiert)
+# choose_release <tag-prefix> <Titel> <Default> <Vorgabe> [soft]
+#   → setzt REL_NAME / REL_ASSET / REL_URL / REL_SHA; "soft": Rückgabe 1 statt Abbruch, wenn nichts gefunden
+choose_release() {
+  local prefix="$1" title="$2" def_ver="$3" want="$4" soft="${5:-}" tsv
+  tsv="$(releases_tsv "$prefix")"
+  if [[ -z "$tsv" ]]; then
+    [[ -n "$soft" ]] && return 1
+    die "Keine Releases '${prefix}*' mit Asset *-$ASSET_VARIANT in $TOOLS_REPO gefunden (Mirror-Workflow gelaufen?)."
+  fi
+  local -a names assets urls shas
+  while IFS=$'\t' read -r n a u h; do names+=("$n"); assets+=("$a"); urls+=("$u"); shas+=("$h"); done <<<"$tsv"
+
+  # Index für eine Version suchen (exakt, sonst normalisiert: r29d ≈ r29)
   find_idx() {
     local v="$1" i nv; nv="$(norm_ver "$v")"
-    for i in "${!names[@]}"; do [[ "${names[$i]%% *}" == "$v" || "${assets[$i]}" == *"-$v-"* ]] && { echo "$i"; return; }; done
-    for i in "${!names[@]}"; do [[ "$(norm_ver "${names[$i]%% *}")" == "$nv" ]] && { echo "$i"; return; }; done
+    for i in "${!names[@]}"; do [[ "${names[$i]}" == "$v" ]] && { echo "$i"; return; }; done
+    for i in "${!names[@]}"; do [[ "$(norm_ver "${names[$i]}")" == "$nv" ]] && { echo "$i"; return; }; done
     echo -1
   }
 
   local idx
   if [[ -n "$want" ]]; then
     idx="$(find_idx "$want")"
-    [[ $idx -ge 0 ]] || die "Version '$want' nicht gefunden. Verfügbar: ${names[*]}"
+    if [[ $idx -lt 0 ]]; then
+      [[ -n "$soft" ]] && { warn "Version '$want' nicht im Mirror. Verfügbar: ${names[*]}"; return 1; }
+      die "Version '$want' nicht gefunden. Verfügbar: ${names[*]}"
+    fi
   else
     local d; d="$(find_idx "$def_ver")"; [[ $d -ge 0 ]] || d=0
     local -a labels; local i
     for i in "${!names[@]}"; do labels+=("$(printf '%-22s %s' "${names[$i]}" "${assets[$i]}")"); done
     idx="$(menu "$title" "$d" "${labels[@]}")"
   fi
-  REL_NAME="${names[$idx]%% *}"; REL_ASSET="${assets[$idx]}"; REL_URL="${urls[$idx]}"
+  REL_NAME="${names[$idx]}"; REL_ASSET="${assets[$idx]}"; REL_URL="${urls[$idx]}"; REL_SHA="${shas[$idx]}"
+}
+
+# verify_sha <datei> <url> <sha-aus-api>: SHA-256 gegen GitHub-digest bzw. <asset>.sha256 des Mirrors prüfen
+verify_sha() {
+  local f="$1" url="$2" want="${3:-}" got
+  if [[ -z "$want" ]]; then
+    want="$(curl -fsSL --retry 2 "$url.sha256" 2>/dev/null | awk 'NR==1{print $1}' || true)"
+  fi
+  if [[ ! "$want" =~ ^[0-9a-f]{64}$ ]]; then
+    warn "Keine Prüfsumme für $(basename "$f") verfügbar – Download ist nicht verifiziert."
+    return 0
+  fi
+  got="$(sha256sum "$f" | awk '{print $1}')"
+  if [[ "$got" != "$want" ]]; then
+    rm -f "$f"
+    die "SHA-256 stimmt nicht für $(basename "$f") (erwartet $want, erhalten $got). Datei gelöscht – Script erneut starten."
+  fi
+  ok "SHA-256 geprüft: $(basename "$f")"
 }
 
 download() {
@@ -237,16 +294,26 @@ content_root() {
 # 0. Versionen abfragen (alles vorab, damit danach unbeaufsichtigt läuft)
 # =============================================================================
 select_versions() {
-  step "Versionen wählen"
+  step "Versionen wählen  (Quelle: github.com/$TOOLS_REPO)"
+  fetch_releases   # einmal im Hauptprozess laden (Cache für alle drei Menüs)
   if [[ $SKIP_SDK -eq 0 ]]; then
-    choose_release "$SDK_REPO" "Android-SDK (build-tools / platform-tools, aarch64):" "$DEFAULT_SDK" "$SDK_VER"
-    SDK_VER="$REL_NAME" SDK_ASSET="$REL_ASSET" SDK_URL="$REL_URL"
+    choose_release "$SDK_PREFIX" "Android-SDK (build-tools / platform-tools, aarch64):" "$DEFAULT_SDK" "$SDK_VER"
+    SDK_VER="$REL_NAME" SDK_ASSET="$REL_ASSET" SDK_URL="$REL_URL" SDK_SHA="$REL_SHA"
     ok "SDK: $SDK_VER  ($SDK_ASSET)"
   fi
   if [[ $SKIP_NDK -eq 0 ]]; then
-    choose_release "$NDK_REPO" "Android-NDK (aarch64):" "$DEFAULT_NDK" "$NDK_VER"
-    NDK_VER="$REL_NAME" NDK_ASSET="$REL_ASSET" NDK_URL="$REL_URL"
+    choose_release "$NDK_PREFIX" "Android-NDK (aarch64):" "$DEFAULT_NDK" "$NDK_VER"
+    NDK_VER="$REL_NAME" NDK_ASSET="$REL_ASSET" NDK_URL="$REL_URL" NDK_SHA="$REL_SHA"
     ok "NDK: $NDK_VER  ($NDK_ASSET)"
+  fi
+  if [[ $SKIP_CMAKE -eq 0 ]]; then
+    if choose_release "$CMAKE_PREFIX" "CMake (aarch64):" "$DEFAULT_CMAKE" "$CMAKE_SEL" soft; then
+      CMAKE_PICK="$REL_NAME" CMAKE_ASSET="$REL_ASSET" CMAKE_URL="$REL_URL" CMAKE_SHA="$REL_SHA"
+      ok "CMake: $CMAKE_PICK  ($CMAKE_ASSET)"
+    else
+      warn "Kein CMake im Mirror – Termux-CMake wird verlinkt."
+      CMAKE_PICK=""
+    fi
   fi
 }
 
@@ -437,6 +504,7 @@ install_sdk() {
   # c) Custom aarch64-SDK herunterladen & native Binaries einspielen
   local file="$DL_DIR/sdk-$SDK_VER-$SDK_ASSET" tmp="$DL_DIR/sdk-extract" root aapt2 adb
   download "$SDK_URL" "$file"
+  verify_sha "$file" "$SDK_URL" "${SDK_SHA:-}"
   echo "Entpacke $SDK_ASSET …"
   extract "$file" "$tmp"
   root="$(content_root "$tmp")"
@@ -477,6 +545,37 @@ link_cmake() {
   ok "CMake $v für Gradle verlinkt"
 }
 
+# CMake aus dem Mirror nach $ANDROID_HOME/cmake/<ver> (AGP: externalNativeBuild.cmake.version)
+install_cmake() {
+  step "3b/7  CMake $CMAKE_PICK (aarch64) → $ANDROID_HOME/cmake/$CMAKE_PICK"
+  local cdir="$ANDROID_HOME/cmake/$CMAKE_PICK" file tmp="$DL_DIR/cmake-extract" root cmbin
+  if [[ -x "$cdir/bin/cmake" && ! -L "$cdir/bin/cmake" && $FORCE -eq 0 ]]; then
+    ok "CMake $CMAKE_PICK bereits vorhanden"; CMAKE_VER="$CMAKE_PICK"; return 0
+  fi
+  file="$DL_DIR/$CMAKE_ASSET"
+  download "$CMAKE_URL" "$file"
+  verify_sha "$file" "$CMAKE_URL" "${CMAKE_SHA:-}"
+  extract "$file" "$tmp"
+  root="$(content_root "$tmp")"
+  cmbin="$(find "$tmp" -type f -path '*/bin/cmake' | head -n1 || true)"
+  [[ -n "$cmbin" ]] || { rm -rf "$tmp"; warn "bin/cmake im Archiv nicht gefunden – Termux-CMake wird verlinkt."; return 1; }
+  root="$(dirname "$(dirname "$cmbin")")"
+  mkdir -p "$ANDROID_HOME/cmake"; rm -rf "$cdir"
+  mv "$root" "$cdir"; rm -rf "$tmp"
+  chmod +x "$cdir"/bin/* 2>/dev/null || true
+  if [[ ! -x "$cdir/bin/ninja" ]]; then
+    command -v ninja >/dev/null || pkg install -y ninja >/dev/null 2>&1 || true
+    command -v ninja >/dev/null && ln -sf "$(command -v ninja)" "$cdir/bin/ninja" || warn "ninja fehlt (pkg install ninja)"
+  fi
+  printf 'Pkg.Revision = %s\nPkg.Path = cmake;%s\n' "$CMAKE_PICK" "$CMAKE_PICK" > "$cdir/source.properties"
+  if "$cdir/bin/cmake" --version >/dev/null 2>&1; then
+    ok "CMake: $("$cdir/bin/cmake" --version | head -n1)"
+  else
+    warn "cmake startet nicht – Asset-Variante prüfen (ASSET_VARIANT=$ASSET_VARIANT)."
+  fi
+  CMAKE_VER="$CMAKE_PICK"
+}
+
 # =============================================================================
 # 4. Android-NDK
 # =============================================================================
@@ -486,6 +585,7 @@ install_ndk() {
 
   local file="$DL_DIR/$NDK_ASSET" tmp="$DL_DIR/ndk-extract" root ver
   download "$NDK_URL" "$file"
+  verify_sha "$file" "$NDK_URL" "${NDK_SHA:-}"
   echo "Entpacke NDK (dauert, mehrere GB) …"
   extract "$file" "$tmp"
   root="$(content_root "$tmp")"
@@ -749,7 +849,10 @@ GIT_LOGIN=""
 select_versions
 [[ $SKIP_GIT -eq 1 ]] || setup_git
 SDKMANAGER="" CMAKE_VER="" NDK_REV=""
-[[ $SKIP_SDK       -eq 1 ]] || { install_sdk; link_cmake; configure_gradle; }
+[[ $SKIP_SDK       -eq 1 ]] || { install_sdk; configure_gradle; }
+if [[ $SKIP_CMAKE -eq 1 || -z "$CMAKE_PICK" ]] || ! install_cmake; then
+  [[ $SKIP_SDK -eq 1 ]] || link_cmake      # Fallback: Termux-CMake für AGP verlinken
+fi
 [[ $SKIP_NDK       -eq 1 ]] || install_ndk
 [[ $SKIP_AGY       -eq 1 ]] || install_agy
 [[ $SKIP_TERMUXIFY -eq 1 ]] || install_termuxify
