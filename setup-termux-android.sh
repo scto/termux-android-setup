@@ -24,9 +24,10 @@
 #    --ndk VER          NDK-Version ohne Menü (z.B. r29d, r30b)
 #    --cmake VER        CMake-Version ohne Menü (z.B. 3.22.1)
 #    --platform N       Android-Platform API-Level ohne Menü (z.B. 36)
-#    --cmdline-tools    cmdline-tools (sdkmanager) installieren: Release-Asset cmdline-tools-<rev> aus dem Mirror,
-#                       fehlt es, wird es temporär aus dem Archiv android-sdk-37.0.0 entpackt (kein Google-Download).
-#                       Ohne diese Option wird ein vorhandener sdkmanager nur weiterverwendet.
+#    --cmdline-tools    cmdline-tools (sdkmanager) installieren aus dem Release cmdline-tools-19.0 von
+#                       scto/codeforge-tools (kein Google-Download); nicht erreichbar → Fallback: temporär aus dem
+#                       Archiv android-sdk-37.0.0 entpacken. Ohne diese Option wird ein vorhandener sdkmanager
+#                       nur weiterverwendet.
 #    -y | --yes         Keine Fragen, überall Standardwerte nehmen
 #    --skip-pkg         Paketinstallation überspringen
 #    --skip-sdk         SDK überspringen
@@ -42,7 +43,8 @@
 #
 #  ENV: GIT_NAME, GIT_EMAIL, GIT_TOKEN (Git ohne Rückfragen), GITHUB_TOKEN,
 #       ANDROID_HOME, ASSET_VARIANT, TOOLS_REPO (Standard: scto/codeforge-tools),
-#       INCLUDE_PRERELEASE=1 (beta/rc-Releases zulassen), CMDLINE_SDK_VER (SDK-Archiv für den Fallback, Standard 37.0.0)
+#       INCLUDE_PRERELEASE=1 (beta/rc-Releases zulassen), CMDLINE_REV (cmdline-tools-Release, Standard 19.0, "latest" = neuestes),
+#       CMDLINE_SDK_VER (SDK-Archiv für den Fallback, Standard 37.0.0)
 #  Re-Run ist sicher (idempotent): .bashrc-Block wird ersetzt, nicht dupliziert.
 # =============================================================================
 set -Eeuo pipefail
@@ -70,9 +72,13 @@ DEFAULT_NDK="${DEFAULT_NDK:-r29d}"
 DEFAULT_CMAKE="${DEFAULT_CMAKE:-3.22.1}"
 AGY_INSTALLER="${AGY_INSTALLER:-https://raw.githubusercontent.com/wallentx/antigravity-cli-termux/dev/install.sh}"
 # cmdline-tools (reines Java → läuft auf jeder Architektur) kommen aus dem Mirror, nicht von Google:
-#   Release cmdline-tools-<rev> (Asset cmdline-tools-<rev>.tar.xz), erzeugt durch den Workflow "Publish cmdline-tools".
-#   Fehlt es, wird cmdline-tools/ temporär aus dem Archiv android-sdk-$CMDLINE_SDK_VER entpackt.
+#   https://github.com/scto/codeforge-tools/releases/tag/cmdline-tools-19.0  (Asset cmdline-tools-19.0.tar.xz)
+#   Fehlt das Release, wird cmdline-tools/ temporär aus dem Archiv android-sdk-$CMDLINE_SDK_VER entpackt.
 CMDLINE_PREFIX="${CMDLINE_PREFIX:-cmdline-tools-}"
+CMDLINE_REV="${CMDLINE_REV:-19.0}"
+# Fest hinterlegte SHA-256 für cmdline-tools-19.0.tar.xz (bei anderer Revision per CMDLINE_SHA256 setzen, sonst .sha256 des Releases)
+if [[ "$CMDLINE_REV" == "19.0" ]]; then CMDLINE_SHA256="${CMDLINE_SHA256:-f9ab9233b8ced6f74fd682a8a3c68a52031bc761bc06425e8dc502adb93fca9e}"
+else CMDLINE_SHA256="${CMDLINE_SHA256:-}"; fi
 CMDLINE_SDK_VER="${CMDLINE_SDK_VER:-37.0.0}"
 
 ANDROID_HOME="${ANDROID_HOME:-$HOME/android-sdk}"
@@ -505,29 +511,36 @@ install_cmdline_from_sdk_archive() {
   fi
 }
 
-# cmdline-tools installieren (nur mit --cmdline-tools): 1. Release-Asset, 2. Fallback SDK-Archiv. Kein Google-Download.
+# cmdline-tools installieren (nur mit --cmdline-tools):
+#   1. Release cmdline-tools-$CMDLINE_REV von $TOOLS_REPO (direkter Download, SHA-256 geprüft; "latest" fragt die API)
+#   2. Fallback: temporär aus dem SDK-Archiv android-sdk-$CMDLINE_SDK_VER entpacken. Kein Google-Download.
 install_cmdline_tools() {
   SDKMANAGER="$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager"
   if [[ -x "$SDKMANAGER" && $FORCE -eq 0 ]]; then ok "cmdline-tools $(cmdline_rev) bereits vorhanden"; return 0; fi
-  local row rev asset url sha file tmp="$DL_DIR/clt-extract"
-  row="$(find_cmdline_asset || true)"
-  if [[ -n "$row" ]]; then
-    IFS=$'\t' read -r rev asset url sha <<<"$row"
+  local rev="$CMDLINE_REV" asset url sha="$CMDLINE_SHA256" file tmp="$DL_DIR/clt-extract" row
+  if [[ "$rev" == latest ]]; then
+    row="$(find_cmdline_asset || true)"
+    if [[ -n "$row" ]]; then IFS=$'\t' read -r rev asset url sha <<<"$row"; else rev=""; fi
+  else
+    asset="cmdline-tools-$rev.tar.xz"
+    url="https://github.com/$TOOLS_REPO/releases/download/${CMDLINE_PREFIX}${rev}/$asset"
+  fi
+  if [[ -n "$rev" ]]; then
     file="$DL_DIR/$asset"
     echo "cmdline-tools $rev aus Release ${CMDLINE_PREFIX}${rev} ($TOOLS_REPO)"
     if download "$url" "$file"; then
       verify_sha "$file" "$url" "$sha"
       extract "$file" "$tmp"
       if cmdline_install_from_dir "$tmp"; then
-        rm -rf "$tmp"; ok "cmdline-tools $(cmdline_rev) installiert (Release-Asset $asset)"; return 0
+        rm -rf "$tmp"; ok "cmdline-tools $(cmdline_rev) installiert (Release ${CMDLINE_PREFIX}${rev})"; return 0
       fi
       rm -rf "$tmp"
       warn "Release-Asset $asset enthält kein bin/sdkmanager – Fallback auf das SDK-Archiv."
     else
-      warn "Download von $asset fehlgeschlagen – Fallback auf das SDK-Archiv."
+      warn "Download von $url fehlgeschlagen – Fallback auf das SDK-Archiv."
     fi
   else
-    warn "Kein Release ${CMDLINE_PREFIX}* in $TOOLS_REPO (Workflow \"Publish cmdline-tools\" noch nicht gelaufen) – Fallback auf das SDK-Archiv."
+    warn "Kein Release ${CMDLINE_PREFIX}* in $TOOLS_REPO gefunden – Fallback auf das SDK-Archiv."
   fi
   install_cmdline_from_sdk_archive
 }
