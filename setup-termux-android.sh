@@ -1,13 +1,14 @@
 #!/data/data/com.termux/files/usr/bin/bash
 # =============================================================================
 #  setup-termux-android.sh
-#  Android-Entwicklungsumgebung für Termux (aarch64)
+#  Android-Entwicklungsumgebung für Termux (aarch64 und 32-bit-ARM)
 #
 #   1. Termux-Pakete (Java 17, Git, Git-LFS, Gradle, Kotlin, build-essential, pip …)
 #   2. Git einrichten: Name, E-Mail, GitHub-Token (→ Credential Store)
 #   3. Android-SDK  (scto/codeforge-tools, Tags android-sdk-<ver>)  – Versionsmenü, Default 37.0.0
-#      + Build-Tools / Platform (android.jar) via Google cmdline-tools,
-#        native Binaries (aapt2, aidl, zipalign …) werden durch aarch64 ersetzt
+#      + cmdline-tools/sdkmanager (nur mit --cmdline-tools, aus dem Mirror – nie von Google),
+#        damit Build-Tools-Java-Teile + Platform (android.jar) via sdkmanager,
+#        native Binaries (aapt2, aidl, zipalign …) werden durch ARM-Builds (aarch64 bzw. armv7a) ersetzt
 #   4. Android-NDK  (scto/codeforge-tools, Tags android-ndk-<name>)  – Versionsmenü, Default r29d
 #      CMake        (scto/codeforge-tools, Tags cmake-<ver>)         – Versionsmenü, Default 3.22.1
 #   5. Antigravity CLI "agy" (wallentx/antigravity-cli-termux)
@@ -23,6 +24,9 @@
 #    --ndk VER          NDK-Version ohne Menü (z.B. r29d, r30b)
 #    --cmake VER        CMake-Version ohne Menü (z.B. 3.22.1)
 #    --platform N       Android-Platform API-Level ohne Menü (z.B. 36)
+#    --cmdline-tools    cmdline-tools (sdkmanager) installieren: Release-Asset cmdline-tools-<rev> aus dem Mirror,
+#                       fehlt es, wird es temporär aus dem Archiv android-sdk-37.0.0 entpackt (kein Google-Download).
+#                       Ohne diese Option wird ein vorhandener sdkmanager nur weiterverwendet.
 #    -y | --yes         Keine Fragen, überall Standardwerte nehmen
 #    --skip-pkg         Paketinstallation überspringen
 #    --skip-sdk         SDK überspringen
@@ -38,7 +42,7 @@
 #
 #  ENV: GIT_NAME, GIT_EMAIL, GIT_TOKEN (Git ohne Rückfragen), GITHUB_TOKEN,
 #       ANDROID_HOME, ASSET_VARIANT, TOOLS_REPO (Standard: scto/codeforge-tools),
-#       INCLUDE_PRERELEASE=1 (beta/rc-Releases zulassen)
+#       INCLUDE_PRERELEASE=1 (beta/rc-Releases zulassen), CMDLINE_SDK_VER (SDK-Archiv für den Fallback, Standard 37.0.0)
 #  Re-Run ist sicher (idempotent): .bashrc-Block wird ersetzt, nicht dupliziert.
 # =============================================================================
 set -Eeuo pipefail
@@ -51,21 +55,32 @@ SDK_PREFIX="${SDK_PREFIX:-android-sdk-}"
 NDK_PREFIX="${NDK_PREFIX:-android-ndk-}"
 CMAKE_PREFIX="${CMAKE_PREFIX:-cmake-}"
 INCLUDE_PRERELEASE="${INCLUDE_PRERELEASE:-0}"
-# Termux = Android/Bionic → "aarch64-linux-android"
-ASSET_VARIANT="${ASSET_VARIANT:-aarch64-linux-android}"
+# Termux = Android/Bionic. Variante nach Gerätearchitektur (uname -m):
+#   aarch64        → *-aarch64-linux-android
+#   armv7l/armv8l  → *-armv7a-linux-androideabi   (32-bit-Userland, auch auf 64-bit-Hardware)
+case "$(uname -m)" in
+  aarch64|arm64)       CF_ARCH=aarch64 ;;
+  armv7l|armv8l|arm*)  CF_ARCH=arm ;;
+  *)                   CF_ARCH="" ;;
+esac
+if [[ "$CF_ARCH" == arm ]]; then ASSET_VARIANT="${ASSET_VARIANT:-armv7a-linux-androideabi}"
+else ASSET_VARIANT="${ASSET_VARIANT:-aarch64-linux-android}"; fi
 DEFAULT_SDK="${DEFAULT_SDK:-37.0.0}"
 DEFAULT_NDK="${DEFAULT_NDK:-r29d}"
 DEFAULT_CMAKE="${DEFAULT_CMAKE:-3.22.1}"
 AGY_INSTALLER="${AGY_INSTALLER:-https://raw.githubusercontent.com/wallentx/antigravity-cli-termux/dev/install.sh}"
-# Google cmdline-tools (reines Java → läuft auf aarch64); nur für Java-Teile + android.jar
-CMDLINE_TOOLS_URL="${CMDLINE_TOOLS_URL:-https://dl.google.com/android/repository/commandlinetools-linux-15859902_latest.zip}"
+# cmdline-tools (reines Java → läuft auf jeder Architektur) kommen aus dem Mirror, nicht von Google:
+#   Release cmdline-tools-<rev> (Asset cmdline-tools-<rev>.tar.xz), erzeugt durch den Workflow "Publish cmdline-tools".
+#   Fehlt es, wird cmdline-tools/ temporär aus dem Archiv android-sdk-$CMDLINE_SDK_VER entpackt.
+CMDLINE_PREFIX="${CMDLINE_PREFIX:-cmdline-tools-}"
+CMDLINE_SDK_VER="${CMDLINE_SDK_VER:-37.0.0}"
 
 ANDROID_HOME="${ANDROID_HOME:-$HOME/android-sdk}"
 DL_DIR="${DL_DIR:-$HOME/.cache/termux-android-setup}"
 
 SDK_VER="" NDK_VER="" CMAKE_SEL="" CMAKE_PICK="" PLATFORM_API=""
 GIT_NAME="${GIT_NAME:-}" GIT_EMAIL="${GIT_EMAIL:-}" GIT_TOKEN="${GIT_TOKEN:-}"
-ASSUME_YES=0 SKIP_GIT=0 SKIP_PKG=0 SKIP_SDK=0 SKIP_NDK=0 SKIP_CMAKE=0 SKIP_AGY=0 SKIP_TERMUXIFY=0 SKIP_BASHRC=0 NO_PLATFORM=0 FORCE=0
+ASSUME_YES=0 SKIP_GIT=0 SKIP_PKG=0 SKIP_SDK=0 SKIP_NDK=0 SKIP_CMAKE=0 CMDLINE_TOOLS=0 SKIP_AGY=0 SKIP_TERMUXIFY=0 SKIP_BASHRC=0 NO_PLATFORM=0 FORCE=0
 
 # ── Ausgabe ──────────────────────────────────────────────────────────────────
 if [[ -t 1 ]]; then
@@ -81,7 +96,7 @@ trap 'die "Abbruch in Zeile $LINENO: $BASH_COMMAND"' ERR
 
 usage() {
   local self="${BASH_SOURCE[0]}"
-  if [[ -f "$self" ]]; then sed -n '2,41p' "$self" | sed 's/^# \{0,1\}//'; else echo "Siehe Kopfkommentar im Script."; fi
+  if [[ -f "$self" ]]; then sed -n '2,46p' "$self" | sed 's/^# \{0,1\}//'; else echo "Siehe Kopfkommentar im Script."; fi
   exit 0
 }
 
@@ -92,6 +107,7 @@ while [[ $# -gt 0 ]]; do
     --ndk)            NDK_VER="${2:?Version fehlt}"; shift ;;
     --cmake)          CMAKE_SEL="${2:?Version fehlt}"; shift ;;
     --platform)       PLATFORM_API="${2:?API-Level fehlt}"; shift ;;
+    --cmdline-tools)  CMDLINE_TOOLS=1 ;;
     -y|--yes)         ASSUME_YES=1 ;;
     --skip-pkg)       SKIP_PKG=1 ;;
     --skip-sdk)       SKIP_SDK=1 ;;
@@ -111,7 +127,12 @@ done
 
 # ── Vorabprüfungen ───────────────────────────────────────────────────────────
 [[ -n "${TERMUX_VERSION:-}" && -n "${PREFIX:-}" ]] || die "Dieses Script läuft nur in nativem Termux (nicht in proot)."
-[[ "$(uname -m)" == "aarch64" ]] || die "Nur aarch64 wird unterstützt (gefunden: $(uname -m))."
+[[ -n "$CF_ARCH" ]] || die "Nur aarch64 und 32-bit-ARM werden unterstützt (gefunden: $(uname -m))."
+# agy (Antigravity CLI) braucht glibc/aarch64 → auf 32-bit-ARM nicht verfügbar
+if [[ "$CF_ARCH" == arm && $SKIP_AGY -eq 0 ]]; then
+  warn "32-bit-ARM erkannt (Variante $ASSET_VARIANT): Antigravity CLI (agy) wird übersprungen."
+  SKIP_AGY=1
+fi
 mkdir -p "$DL_DIR" "$ANDROID_HOME"
 
 # Interaktiv? Auch bei "curl | bash" über /dev/tty fragen.
@@ -297,17 +318,17 @@ select_versions() {
   step "Versionen wählen  (Quelle: github.com/$TOOLS_REPO)"
   fetch_releases   # einmal im Hauptprozess laden (Cache für alle drei Menüs)
   if [[ $SKIP_SDK -eq 0 ]]; then
-    choose_release "$SDK_PREFIX" "Android-SDK (build-tools / platform-tools, aarch64):" "$DEFAULT_SDK" "$SDK_VER"
+    choose_release "$SDK_PREFIX" "Android-SDK (build-tools / platform-tools, $CF_ARCH):" "$DEFAULT_SDK" "$SDK_VER"
     SDK_VER="$REL_NAME" SDK_ASSET="$REL_ASSET" SDK_URL="$REL_URL" SDK_SHA="$REL_SHA"
     ok "SDK: $SDK_VER  ($SDK_ASSET)"
   fi
   if [[ $SKIP_NDK -eq 0 ]]; then
-    choose_release "$NDK_PREFIX" "Android-NDK (aarch64):" "$DEFAULT_NDK" "$NDK_VER"
+    choose_release "$NDK_PREFIX" "Android-NDK ($CF_ARCH):" "$DEFAULT_NDK" "$NDK_VER"
     NDK_VER="$REL_NAME" NDK_ASSET="$REL_ASSET" NDK_URL="$REL_URL" NDK_SHA="$REL_SHA"
     ok "NDK: $NDK_VER  ($NDK_ASSET)"
   fi
   if [[ $SKIP_CMAKE -eq 0 ]]; then
-    if choose_release "$CMAKE_PREFIX" "CMake (aarch64):" "$DEFAULT_CMAKE" "$CMAKE_SEL" soft; then
+    if choose_release "$CMAKE_PREFIX" "CMake ($CF_ARCH):" "$DEFAULT_CMAKE" "$CMAKE_SEL" soft; then
       CMAKE_PICK="$REL_NAME" CMAKE_ASSET="$REL_ASSET" CMAKE_URL="$REL_URL" CMAKE_SHA="$REL_SHA"
       ok "CMake: $CMAKE_PICK  ($CMAKE_ASSET)"
     else
@@ -426,23 +447,89 @@ setup_git() {
 
 # =============================================================================
 # 3. Android-SDK
-#    a) Google cmdline-tools  → sdkmanager (Java)
+#    a) cmdline-tools (Mirror, nur mit --cmdline-tools) → sdkmanager (Java)
 #    b) build-tools;<ver> + platforms;android-N  (offiziell: package.xml, *.jar)
-#    c) native x86-Binaries in build-tools/platform-tools durch aarch64 ersetzen
+#    c) native x86-Binaries in build-tools/platform-tools durch ARM-Builds ersetzen
 # =============================================================================
-install_cmdline_tools() {
-  SDKMANAGER="$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager"
-  [[ -x "$SDKMANAGER" && $FORCE -eq 0 ]] && return 0
-  local file="$DL_DIR/$(basename "$CMDLINE_TOOLS_URL")" tmp="$DL_DIR/clt-extract"
-  download "$CMDLINE_TOOLS_URL" "$file" || { warn "cmdline-tools Download fehlgeschlagen."; return 1; }
-  extract "$file" "$tmp"
+# Revision der installierten cmdline-tools (aus source.properties)
+cmdline_rev() { sed -n 's/^Pkg\.Revision *= *//p' "$ANDROID_HOME/cmdline-tools/latest/source.properties" 2>/dev/null | head -n1 | tr -d '\r ' || true; }
+
+# Neuestes Release-Asset cmdline-tools-<rev> im Mirror → "<rev>\t<asset>\t<url>\t<sha256>" (leer, wenn keins da ist)
+find_cmdline_asset() {
+  fetch_releases
+  jq -r --arg p "$CMDLINE_PREFIX" '
+    .[] | select((.draft | not) and (.tag_name | startswith($p))) | . as $r
+    | ($r.assets[] | select(.name | test("^cmdline-tools-.*\\.(tar\\.xz|tar\\.gz|zip)$"))) as $a
+    | [ ($r.tag_name | .[($p | length):]), $a.name, $a.browser_download_url,
+        (($a.digest // "") | sub("^sha256:"; "")) ] | @tsv' "$RELEASES_JSON" | sort -t$'\t' -k1,1 -Vr | head -n1
+}
+
+# Verzeichnis mit bin/sdkmanager in <tmp> suchen und nach cmdline-tools/latest verschieben
+cmdline_install_from_dir() {
+  local tmp="$1" sm root
+  sm="$(find "$tmp" -type f -path '*/bin/sdkmanager' | head -n1 || true)"
+  [[ -n "$sm" ]] || return 1
+  root="$(dirname "$(dirname "$sm")")"
   mkdir -p "$ANDROID_HOME/cmdline-tools"
   rm -rf "$ANDROID_HOME/cmdline-tools/latest"
-  mv "$(content_root "$tmp")" "$ANDROID_HOME/cmdline-tools/latest"
-  rm -rf "$tmp"
+  mv "$root" "$ANDROID_HOME/cmdline-tools/latest"
   chmod +x "$ANDROID_HOME"/cmdline-tools/latest/bin/* 2>/dev/null || true
-  [[ -x "$SDKMANAGER" ]] || { warn "sdkmanager nach dem Entpacken nicht gefunden ($SDKMANAGER)."; return 1; }
-  ok "cmdline-tools installiert"
+  [[ -x "$SDKMANAGER" ]]
+}
+
+# Fallback: cmdline-tools/ temporär aus dem SDK-Archiv android-sdk-$CMDLINE_SDK_VER entpacken
+install_cmdline_from_sdk_archive() {
+  local ver="$CMDLINE_SDK_VER" row asset url sha file tmp="$DL_DIR/clt-extract"
+  row="$(releases_tsv "$SDK_PREFIX" | awk -F'\t' -v v="$ver" '$1 == v { print; exit }')"
+  if [[ -z "$row" ]]; then
+    warn "${SDK_PREFIX}${ver} mit Asset *-$ASSET_VARIANT nicht im Mirror ($TOOLS_REPO) – cmdline-tools nicht installiert."
+    return 1
+  fi
+  IFS=$'\t' read -r _ asset url sha <<<"$row"
+  file="$DL_DIR/sdk-$ver-$asset"            # gleicher Pfad wie in install_sdk → wird dort nicht ein zweites Mal geladen
+  download "$url" "$file" || { warn "Download von $asset fehlgeschlagen."; return 1; }
+  verify_sha "$file" "$url" "$sha"
+  echo "Entpacke cmdline-tools temporär aus $asset …"
+  rm -rf "$tmp"; mkdir -p "$tmp"
+  case "$file" in
+    *.tar.xz|*.txz) tar -xJf "$file" -C "$tmp" --wildcards '*cmdline-tools/*' 2>/dev/null || true ;;
+    *)              extract "$file" "$tmp" ;;
+  esac
+  if cmdline_install_from_dir "$tmp"; then
+    rm -rf "$tmp"
+    ok "cmdline-tools $(cmdline_rev) aus ${SDK_PREFIX}${ver} entpackt und installiert"
+  else
+    rm -rf "$tmp"
+    warn "Kein cmdline-tools/bin/sdkmanager im Archiv $asset."
+    return 1
+  fi
+}
+
+# cmdline-tools installieren (nur mit --cmdline-tools): 1. Release-Asset, 2. Fallback SDK-Archiv. Kein Google-Download.
+install_cmdline_tools() {
+  SDKMANAGER="$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager"
+  if [[ -x "$SDKMANAGER" && $FORCE -eq 0 ]]; then ok "cmdline-tools $(cmdline_rev) bereits vorhanden"; return 0; fi
+  local row rev asset url sha file tmp="$DL_DIR/clt-extract"
+  row="$(find_cmdline_asset || true)"
+  if [[ -n "$row" ]]; then
+    IFS=$'\t' read -r rev asset url sha <<<"$row"
+    file="$DL_DIR/$asset"
+    echo "cmdline-tools $rev aus Release ${CMDLINE_PREFIX}${rev} ($TOOLS_REPO)"
+    if download "$url" "$file"; then
+      verify_sha "$file" "$url" "$sha"
+      extract "$file" "$tmp"
+      if cmdline_install_from_dir "$tmp"; then
+        rm -rf "$tmp"; ok "cmdline-tools $(cmdline_rev) installiert (Release-Asset $asset)"; return 0
+      fi
+      rm -rf "$tmp"
+      warn "Release-Asset $asset enthält kein bin/sdkmanager – Fallback auf das SDK-Archiv."
+    else
+      warn "Download von $asset fehlgeschlagen – Fallback auf das SDK-Archiv."
+    fi
+  else
+    warn "Kein Release ${CMDLINE_PREFIX}* in $TOOLS_REPO (Workflow \"Publish cmdline-tools\" noch nicht gelaufen) – Fallback auf das SDK-Archiv."
+  fi
+  install_cmdline_from_sdk_archive
 }
 
 sdkm() { "$SDKMANAGER" --sdk_root="$ANDROID_HOME" "$@"; }
@@ -468,7 +555,7 @@ choose_platform() {
 }
 
 # overlay_natives <quellordner> <zielordner>: ersetzt alle gleichnamigen Dateien
-# im Ziel + kopiert fehlende hinzu (ELF-Binaries & .so von aarch64-Build)
+# im Ziel + kopiert fehlende hinzu (ELF-Binaries & .so vom ARM-Build)
 overlay_natives() {
   local src="$1" dst="$2"
   mkdir -p "$dst"
@@ -478,18 +565,23 @@ overlay_natives() {
 }
 
 install_sdk() {
-  step "3/7  Android-SDK $SDK_VER (aarch64) → $ANDROID_HOME"
+  step "3/7  Android-SDK $SDK_VER ($CF_ARCH) → $ANDROID_HOME"
   local bt_dir="$ANDROID_HOME/build-tools/$SDK_VER"
 
-  # a) cmdline-tools + Lizenzen
-  if install_cmdline_tools; then accept_licenses; else SDKMANAGER=""; fi
+  # a) sdkmanager: bereits installiert oder (mit --cmdline-tools) schon in main installiert
+  if [[ -z "$SDKMANAGER" && -x "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" ]]; then
+    SDKMANAGER="$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager"; accept_licenses
+  fi
+  if [[ -z "$SDKMANAGER" ]]; then
+    warn "Kein sdkmanager – Java-Teile der build-tools und platforms/android.jar werden übersprungen (Option --cmdline-tools installiert ihn)."
+  fi
 
   # b) Offizielle build-tools (Java-Teile, package.xml, damit AGP sie erkennt)
   if [[ -n "$SDKMANAGER" && ( ! -f "$bt_dir/source.properties" || $FORCE -eq 1 ) ]]; then
     if sdkm "build-tools;$SDK_VER"; then
       ok "Offizielle build-tools;$SDK_VER (Java-Teile) installiert"
     else
-      warn "build-tools;$SDK_VER bei Google nicht verfügbar – nur aarch64-Binaries werden genutzt."
+      warn "build-tools;$SDK_VER bei Google nicht verfügbar – nur die $CF_ARCH-Binaries werden genutzt."
     fi
   fi
 
@@ -505,7 +597,7 @@ install_sdk() {
     fi
   fi
 
-  # c) Custom aarch64-SDK herunterladen & native Binaries einspielen
+  # c) Custom ARM-SDK herunterladen & native Binaries einspielen
   local file="$DL_DIR/sdk-$SDK_VER-$SDK_ASSET" tmp="$DL_DIR/sdk-extract" root aapt2 adb
   download "$SDK_URL" "$file"
   verify_sha "$file" "$SDK_URL" "${SDK_SHA:-}"
@@ -518,15 +610,15 @@ install_sdk() {
   [[ -n "$aapt2" ]] || die "aapt2 im SDK-Archiv nicht gefunden – Layout unbekannt ($root)."
 
   overlay_natives "$(dirname "$aapt2")" "$bt_dir"
-  ok "build-tools/$SDK_VER: aarch64-Binaries eingespielt"
+  ok "build-tools/$SDK_VER: $CF_ARCH-Binaries eingespielt"
   if [[ -n "$adb" ]]; then
     overlay_natives "$(dirname "$adb")" "$ANDROID_HOME/platform-tools"
-    ok "platform-tools: aarch64-Binaries eingespielt"
+    ok "platform-tools: $CF_ARCH-Binaries eingespielt"
   fi
   rm -rf "$tmp"
 
   # Minimal-Metadaten, falls Google die Version nicht hatte (AGP liest Pkg.Revision)
-  [[ -f "$bt_dir/source.properties" ]] || printf 'Pkg.Desc = Android SDK Build-Tools %s (aarch64)\nPkg.Revision = %s\n' "$SDK_VER" "$SDK_VER" > "$bt_dir/source.properties"
+  [[ -f "$bt_dir/source.properties" ]] || printf 'Pkg.Desc = Android SDK Build-Tools %s (%s)\nPkg.Revision = %s\n' "$SDK_VER" "$CF_ARCH" "$SDK_VER" > "$bt_dir/source.properties"
 
   # Sanity-Check
   if "$bt_dir/aapt2" version >/dev/null 2>&1; then
@@ -551,7 +643,7 @@ link_cmake() {
 
 # CMake aus dem Mirror nach $ANDROID_HOME/cmake/<ver> (AGP: externalNativeBuild.cmake.version)
 install_cmake() {
-  step "3b/7  CMake $CMAKE_PICK (aarch64) → $ANDROID_HOME/cmake/$CMAKE_PICK"
+  step "3b/7  CMake $CMAKE_PICK ($CF_ARCH) → $ANDROID_HOME/cmake/$CMAKE_PICK"
   local cdir="$ANDROID_HOME/cmake/$CMAKE_PICK" file tmp="$DL_DIR/cmake-extract" root cmbin
   if [[ -x "$cdir/bin/cmake" && ! -L "$cdir/bin/cmake" && $FORCE -eq 0 ]]; then
     ok "CMake $CMAKE_PICK bereits vorhanden"; CMAKE_VER="$CMAKE_PICK"; return 0
@@ -584,7 +676,7 @@ install_cmake() {
 # 4. Android-NDK
 # =============================================================================
 install_ndk() {
-  step "4/7  Android-NDK $NDK_VER (aarch64)"
+  step "4/7  Android-NDK $NDK_VER ($CF_ARCH)"
   mkdir -p "$ANDROID_HOME/ndk"
 
   local file="$DL_DIR/$NDK_ASSET" tmp="$DL_DIR/ndk-extract" root ver
@@ -853,6 +945,10 @@ GIT_LOGIN=""
 select_versions
 [[ $SKIP_GIT -eq 1 ]] || setup_git
 SDKMANAGER="" CMAKE_VER="" NDK_REV=""
+if [[ $CMDLINE_TOOLS -eq 1 ]]; then
+  step "3a/7  cmdline-tools (sdkmanager) aus dem Mirror"
+  if install_cmdline_tools; then accept_licenses; else SDKMANAGER=""; warn "cmdline-tools nicht installiert."; fi
+fi
 [[ $SKIP_SDK       -eq 1 ]] || { install_sdk; configure_gradle; }
 if [[ $SKIP_CMAKE -eq 1 || -z "$CMAKE_PICK" ]] || ! install_cmake; then
   [[ $SKIP_SDK -eq 1 ]] || link_cmake      # Fallback: Termux-CMake für AGP verlinken
@@ -865,6 +961,7 @@ fi
 step "Fertig 🎉"
 cat <<EOF
   SDK        : $ANDROID_HOME
+  cmdline-tools: $([[ -x "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" ]] && cmdline_rev || echo -)
   build-tools: ${SDK_VER:--}
   platform   : ${PLATFORM_API:+android-$PLATFORM_API}
   NDK        : ${NDK_VER:--} ${NDK_REV:+(ndk/$NDK_REV)}
